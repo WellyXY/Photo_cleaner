@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024px" height="1024px" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <defs>
+        <!-- 更华丽的背景渐变 -->
+        <linearGradient x1="0%" y1="0%" x2="100%" y2="100%" id="backgroundGradient">
+            <stop stop-color="#FF5F6D" offset="0%"></stop>
+            <stop stop-color="#FFC371" offset="100%"></stop>
+        </linearGradient>
+        
+        <!-- 照片渐变 -->
+        <linearGradient x1="50%" y1="0%" x2="50%" y2="100%" id="photoGradient">
+            <stop stop-color="#FFFFFF" offset="0%"></stop>
+            <stop stop-color="#F0F0F0" offset="100%"></stop>
+        </linearGradient>
+        
+        <!-- 增强的阴影效果 -->
+        <filter id="shadow" x="-15%" y="-15%" width="130%" height="130%">
+            <feGaussianBlur in="SourceAlpha" stdDeviation="25"></feGaussianBlur>
+            <feOffset dx="0" dy="15" result="offsetblur"></feOffset>
+            <feComponentTransfer>
+                <feFuncA type="linear" slope="0.4"></feFuncA>
+            </feComponentTransfer>
+            <feMerge>
+                <feMergeNode></feMergeNode>
+                <feMergeNode in="SourceGraphic"></feMergeNode>
+            </feMerge>
+        </filter>
+        
+        <!-- 光晕效果 -->
+        <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="10" result="blur"></feGaussianBlur>
+            <feComposite in="SourceGraphic" in2="blur" operator="over"></feComposite>
+        </filter>
+    </defs>
+    
+    <g id="AppIcon" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <!-- 圆角背景 -->
+        <rect id="Background" fill="url(#backgroundGradient)" x="0" y="0" width="1024" height="1024" rx="240" ry="240"></rect>
+        
+        <!-- 照片堆叠元素组 -->
+        <g id="IconElements" transform="translate(182, 182)" filter="url(#shadow)">
+            <!-- 照片堆叠效果 - 更多的旋转和错位 -->
+            <rect id="Photo4" fill="#FFAFBD" transform="rotate(-8)" x="60" y="100" width="600" height="500" rx="35" ry="35"></rect>
+            <rect id="Photo3" fill="#FFC3A0" transform="rotate(-4)" x="40" y="60" width="600" height="500" rx="35" ry="35"></rect>
+            <rect id="Photo2" fill="#FFDDE1" transform="rotate(2)" x="20" y="20" width="600" height="500" rx="35" ry="35"></rect>
+            
+            <!-- 主照片 -->
+            <rect id="Photo1" fill="url(#photoGradient)" transform="rotate(6)" x="0" y="0" width="600" height="500" rx="35" ry="35"></rect>
+            
+            <!-- 清洁元素 - 更明亮的颜色 -->
+            <circle id="CleanSpot" fill="#FF4757" stroke="#FFFFFF" stroke-width="12" filter="url(#glow)" cx="500" cy="400" r="60"></circle>
+            <path d="M550,450 L600,500 L580,520 L530,470 Z" fill="#FF4757" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round"></path>
+            
+            <!-- 照片上的图标元素 -->
+            <g transform="translate(150, 150)">
+                <circle cx="0" cy="0" r="40" fill="#FFC3A0" opacity="0.8"></circle>
+                <path d="M-20,-20 L20,20 M-20,20 L20,-20" stroke="#FF4757" stroke-width="8" stroke-linecap="round"></path>
+            </g>
+            
+            <g transform="translate(300, 250)">
+                <circle cx="0" cy="0" r="30" fill="#FF6B6B" opacity="0.8"></circle>
+                <path d="M0,-15 L0,15 M-15,0 L15,0" stroke="#FFF" stroke-width="6" stroke-linecap="round"></path>
+            </g>
+        </g>
+        
+        <!-- 添加高光和装饰效果 -->
+        <circle cx="820" cy="200" r="100" fill="#FFFFFF" opacity="0.15"></circle>
+        <circle cx="200" cy="800" r="120" fill="#FFFFFF" opacity="0.08"></circle>
+        
+        <!-- 添加一些微妙的几何形状增加视觉兴趣 -->
+        <path d="M700,300 L750,350 L700,400 Z" fill="#FFFFFF" opacity="0.1"></path>
+        <path d="M300,700 L350,750 L250,750 Z" fill="#FFFFFF" opacity="0.1"></path>
+    </g>
+</svg> 

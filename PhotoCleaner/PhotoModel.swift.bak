@@ -1,0 +1,1652 @@
+import Foundation
+import SwiftUI
+import Photos
+import CoreLocation
+import AVFoundation
+
+enum PhotoStatus {
+    case pending
+    case saved
+    case deleted
+}
+
+enum MediaType {
+    case photo
+    case video
+}
+
+// 静态缓存和限流控制
+private class GeocodingManager {
+    static let shared = GeocodingManager()
+    private var geocoder = CLGeocoder()
+    private var locationCache = [String: String]() // 使用字符串键来存储坐标
+    private var requestQueue = [(CLLocation, (String) -> Void)]() // 使用数组而不是字典
+    private var isProcessingQueue = false
+    private var lastRequestTime: Date?
+    private let requestInterval: TimeInterval = 0.2 // 增加间隔到0.2秒，更保守
+    
+    // 获取坐标的唯一字符串标识
+    private func coordinateKey(_ coordinate: CLLocationCoordinate2D) -> String {
+        // 保留5位小数，足够精确同时允许小误差
+        return "\(String(format: "%.5f", coordinate.latitude)),\(String(format: "%.5f", coordinate.longitude))"
+    }
+    
+    // 检查缓存
+    private func getCachedLocation(for coordinate: CLLocationCoordinate2D) -> String? {
+        return locationCache[coordinateKey(coordinate)]
+    }
+    
+    // 添加请求到队列
+    func requestGeocoding(for location: CLLocation, completion: @escaping (String) -> Void) {
+        // 1. 先检查缓存
+        if let cachedName = getCachedLocation(for: location.coordinate) {
+            DispatchQueue.main.async {
+                completion(cachedName)
+            }
+            return
+        }
+        
+        // 2. 添加到队列
+        requestQueue.append((location, completion))
+        
+        // 3. 开始处理队列
+        processQueue()
+    }
+    
+    // 处理队列
+    private func processQueue() {
+        if isProcessingQueue || requestQueue.isEmpty {
+            return
+        }
+        
+        isProcessingQueue = true
+        
+        // 控制请求间隔
+        let now = Date()
+        if let lastTime = lastRequestTime, now.timeIntervalSince(lastTime) < requestInterval {
+            // 如果距离上次请求时间不足，则延迟执行
+            let delayTime = requestInterval - now.timeIntervalSince(lastTime)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delayTime) { [weak self] in
+                self?.processQueue()
+            }
+            isProcessingQueue = false
+            return
+        }
+        
+        // 取出一个请求处理
+        let (location, completion) = requestQueue.removeFirst()
+        
+        // 再次检查缓存（可能在队列等待期间已被其他请求缓存）
+        if let cachedName = getCachedLocation(for: location.coordinate) {
+            DispatchQueue.main.async {
+                completion(cachedName)
+            }
+            isProcessingQueue = false
+            DispatchQueue.main.async { [weak self] in
+                self?.processQueue()
+            }
+            return
+        }
+        
+        lastRequestTime = now
+        
+        geocoder.reverseGeocodeLocation(location) { [weak self] placemarks, error in
+            guard let self = self else { return }
+            
+            var locationName = "Unknown Location"
+            
+            if let placemark = placemarks?.first, error == nil {
+                let city = placemark.locality ?? ""
+                let area = placemark.subLocality ?? ""
+                locationName = area.isEmpty ? city : "\(city) \(area)"
+                
+                // 防止空结果
+                if locationName.isEmpty {
+                    locationName = "Unknown Location"
+                }
+                
+                // 添加到缓存
+                self.locationCache[self.coordinateKey(location.coordinate)] = locationName
+            }
+            
+            // 执行回调
+            DispatchQueue.main.async {
+                completion(locationName)
+            }
+            
+            // 继续处理队列
+            self.isProcessingQueue = false
+            
+            // 延迟一点时间再处理下一个，确保不会触发限流
+            DispatchQueue.main.asyncAfter(deadline: .now() + self.requestInterval) { [weak self] in
+                self?.processQueue()
+            }
+        }
+    }
+}
+
+class DetailedPhoto: Identifiable {
+    let id: String
+    let asset: PHAsset
+    let mediaType: MediaType
+    let duration: TimeInterval
+    private(set) var creationDate: Date?
+    private(set) var modificationDate: Date?
+    
+    var status: PhotoStatus = .pending
+    private(set) var locationName: String = "Unknown Location"
+    private var isLocationLoaded: Bool = false
+    
+    init(asset: PHAsset) {
+        self.id = asset.localIdentifier
+        self.asset = asset
+        
+        // If it's a video, get the duration
+        if asset.mediaType == .video {
+            self.duration = asset.duration
+        } else {
+            self.duration = 0
+        }
+        
+        // Set media type
+        if asset.mediaType == .video {
+            self.mediaType = .video
+        } else {
+            self.mediaType = .photo
+        }
+        
+        // Set initial status to pending
+        self.status = .pending
+        
+        // Set dates
+        self.creationDate = asset.creationDate
+        self.modificationDate = asset.modificationDate
+        
+        // 不在初始化时加载位置信息，而是根据需要延迟加载
+    }
+    
+    // Load location information as needed
+    func loadLocationIfNeeded() {
+        if isLocationLoaded || asset.location == nil {
+            return
+        }
+        
+        isLocationLoaded = true
+        
+        // If location information is available, get geocoding
+        if let location = asset.location {
+            // Use geocoding manager to process the request
+            GeocodingManager.shared.requestGeocoding(for: location) { [weak self] locationName in
+                guard let self = self else { return }
+                self.locationName = locationName
+                NotificationCenter.default.post(
+                    name: Notification.Name("UpdateLocationName"),
+                    object: nil,
+                    userInfo: [
+                        "photoId": self.id,
+                        "locationName": locationName
+                    ]
+                )
+            }
+        }
+    }
+    
+    // Update location name
+    func updateLocationName(_ name: String) {
+        locationName = name
+    }
+    
+    // Format date
+    var formattedDate: String {
+        guard let date = creationDate else { return "Unknown Date" }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM dd, yyyy HH:mm"
+        return formatter.string(from: date)
+    }
+    
+    // Format location
+    var formattedLocation: String {
+        return locationName
+    }
+    
+    // Format video duration
+    var formattedDuration: String {
+        if mediaType == .photo { return "" }
+        
+        let minutes = Int(duration) / 60
+        let seconds = Int(duration) % 60
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+}
+
+class DetailedAlbum: Identifiable {
+    let id: String
+    let title: String
+    let album: PHAssetCollection
+    var count: Int = 0
+    var coverImage: UIImage?
+    var isLoading: Bool = false
+    
+    init(album: PHAssetCollection) {
+        self.id = album.localIdentifier
+        self.title = album.localizedTitle ?? "Unnamed Album"
+        self.album = album
+        
+        // Get the number of media in the album
+        let fetchOptions = PHFetchOptions()
+        let assets = PHAsset.fetchAssets(in: album, options: fetchOptions)
+        self.count = assets.count
+    }
+}
+
+class ModelPhotoManager: ObservableObject {
+    @Published var photos: [DetailedPhoto] = []
+    @Published var savedPhotos: [DetailedPhoto] = []
+    @Published var deletedPhotos: [DetailedPhoto] = []
+    @Published var isLoading: Bool = false
+    @Published var hasPermission: Bool = false
+    @Published var albums: [DetailedAlbum] = []
+    @Published var selectedAlbum: DetailedAlbum?
+    
+    // Add image cache
+    private var imageCache = NSCache<NSString, UIImage>()
+    
+    // Last processed position date
+    private let lastPositionKey = "LastProcessedPhotoDate"
+    private let savedPhotosKey = "SavedPhotosIDs"
+    private let deletedPhotosKey = "DeletedPhotosIDs"
+    private let appStateKey = "AppStateVersion"
+    private let currentAppStateVersion = "1.0" // For future version compatibility
+    
+    init() {
+        print("PhotoManager initialized")
+        // Check current permission status
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        hasPermission = (status == .authorized || status == .limited)
+        print("Initial permission status: \(status.rawValue), hasPermission: \(hasPermission)")
+        
+        // Set cache capacity
+        imageCache.countLimit = 100
+        
+        // Listen for location name updates
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleLocationNameUpdate(_:)),
+            name: Notification.Name("UpdateLocationName"),
+            object: nil
+        )
+        
+        // Listen for app entering background events, save state
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(saveAppState),
+            name: UIApplication.willResignActiveNotification,
+            object: nil
+        )
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    @objc private func handleLocationNameUpdate(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let photoId = userInfo["photoId"] as? String,
+              let locationName = userInfo["locationName"] as? String else {
+            return
+        }
+        
+        DispatchQueue.main.async {
+            // Update location names in all photo lists
+            if let index = self.photos.firstIndex(where: { $0.id == photoId }) {
+                self.photos[index].updateLocationName(locationName)
+            }
+            
+            if let index = self.savedPhotos.firstIndex(where: { $0.id == photoId }) {
+                self.savedPhotos[index].updateLocationName(locationName)
+            }
+            
+            if let index = self.deletedPhotos.firstIndex(where: { $0.id == photoId }) {
+                self.deletedPhotos[index].updateLocationName(locationName)
+            }
+        }
+    }
+    
+    func requestPermission(completion: @escaping (Bool) -> Void) {
+        // 首先检查是否已经授权
+        if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized {
+            print("照片权限已授权")
+            completion(true)
+            return
+        }
+        
+        // 明确请求readWrite级别的权限，包括删除权限
+        PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
+            DispatchQueue.main.async {
+                let granted = status == .authorized
+                print("照片权限请求结果: \(granted)")
+                completion(granted)
+                
+                // 保存权限状态，避免重复请求
+                UserDefaults.standard.set(granted, forKey: "PhotoPermissionGranted")
+            }
+        }
+    }
+    
+    func loadPhotos() {
+        print("Starting to load photos")
+        isLoading = true
+        
+        // Ensure we have permission
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if status != .authorized && status != .limited {
+            requestPermission { [weak self] granted in
+                if granted {
+                    self?.loadPhotosAfterPermissionGranted()
+                } else {
+                    DispatchQueue.main.async {
+                        self?.isLoading = false
+                    }
+                }
+            }
+            return
+        }
+        
+        loadPhotosAfterPermissionGranted()
+    }
+    
+    private func loadPhotosAfterPermissionGranted() {
+        let fetchOptions = PHFetchOptions()
+        print("Will sort photos and videos after fetching to ensure newest media appears first")
+        
+        // Filter out iCloud photos, only get local photos
+        fetchOptions.includeAssetSourceTypes = [.typeUserLibrary]
+        fetchOptions.includeAllBurstAssets = false
+        
+        print("Media filter settings: only include local photos and videos, exclude iCloud content")
+        
+        // Get all media assets (don't specify a specific type, get all types)
+        let photoAssets = PHAsset.fetchAssets(with: .image, options: fetchOptions)
+        let videoAssets = PHAsset.fetchAssets(with: .video, options: fetchOptions)
+        
+        print("Retrieved \(photoAssets.count) photos and \(videoAssets.count) videos")
+        
+        var allAssets: [PHAsset] = []
+        
+        // Add all photos
+        photoAssets.enumerateObjects { (asset, _, _) in
+            allAssets.append(asset)
+        }
+        
+        // Add all videos
+        videoAssets.enumerateObjects { (asset, _, _) in
+            allAssets.append(asset)
+        }
+        
+        // Use high-performance sorting method to ensure correct sorting
+        print("Starting to sort media assets...")
+        allAssets = sortPhotosByDateDescending(allAssets)
+        
+        // Print the dates of the first few photos to verify sorting
+        if allAssets.count > 0 {
+            print("Verifying media sort results:")
+            let count = min(5, allAssets.count)
+            for i in 0..<count {
+                let asset = allAssets[i]
+                let dateStr = asset.creationDate?.description ?? "No date"
+                let typeStr = asset.mediaType == .video ? "Video" : "Photo"
+                print("Item \(i+1) \(typeStr) date: \(dateStr)")
+            }
+        }
+        
+        var newPhotos: [DetailedPhoto] = []
+        // Convert to Photo objects
+        for asset in allAssets {
+            let photo = DetailedPhoto(asset: asset)
+            newPhotos.append(photo)
+        }
+        
+        // Print the dates of the sorted photos
+        if !newPhotos.isEmpty {
+            print("Final photo sort results:")
+            let count = min(5, newPhotos.count)
+            for i in 0..<count {
+                let dateStr = newPhotos[i].creationDate?.description ?? "No date"
+                print("Photo \(i+1) date: \(dateStr)")
+            }
+        }
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.photos = newPhotos
+            self.isLoading = false
+            print("Photos loaded, total: \(newPhotos.count)")
+            
+            // After loading is complete, continue from the last processed position
+            self.loadLastPosition()
+        }
+    }
+    
+    // 照片排序方法 - 按创建日期降序
+    private func sortPhotosByDateDescending(_ assets: [PHAsset]) -> [PHAsset] {
+        return assets.sorted { first, second in
+            guard let date1 = first.creationDate, let date2 = second.creationDate else {
+                // 处理无日期元数据的情况
+                return first.creationDate != nil // 有日期的排在前面
+            }
+            return date1.compare(date2) == .orderedDescending // 降序排列
+        }
+    }
+    
+    // 高性能照片排序方法 - 备用方法
+    private func optimizedSortAssets(_ assets: [PHAsset]) -> [PHAsset] {
+        return assets.sorted(by: {
+            ($0.creationDate ?? Date.distantPast) > 
+            ($1.creationDate ?? Date.distantPast)
+        })
+    }
+    
+    // 添加一个方法用于延迟加载照片位置信息
+    func loadPhotoLocation(for photo: DetailedPhoto) {
+        photo.loadLocationIfNeeded()
+    }
+    
+    func loadImage(for photo: DetailedPhoto, size: CGSize, completion: @escaping (UIImage?) -> Void) {
+        // 在加载图片的同时，触发位置信息加载
+        loadPhotoLocation(for: photo)
+        
+        // 确保有权限
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if status != .authorized && status != .limited {
+            requestPermission { [weak self] granted in
+                if granted {
+                    self?.loadImageAfterPermissionGranted(for: photo, size: size, completion: completion)
+                } else {
+                    DispatchQueue.main.async {
+                        completion(nil)
+                    }
+                }
+            }
+            return
+        }
+        
+        loadImageAfterPermissionGranted(for: photo, size: size, completion: completion)
+    }
+    
+    private func loadImageAfterPermissionGranted(for photo: DetailedPhoto, size: CGSize, completion: @escaping (UIImage?) -> Void) {
+        // 生成缓存键
+        let cacheKey = NSString(string: "\(photo.id)_\(Int(size.width))x\(Int(size.height))")
+        
+        // 检查缓存中是否有图片
+        if let cachedImage = imageCache.object(forKey: cacheKey) {
+            print("Using cached image: \(photo.id)")
+            // 立即返回缓存的图片，不显示加载状态
+            DispatchQueue.main.async {
+                completion(cachedImage)
+            }
+            return
+        }
+        
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        // 允许从iCloud下载，但设置超时处理
+        options.isNetworkAccessAllowed = true
+        options.isSynchronous = false
+        options.version = .current
+        
+        // 添加iCloud错误处理
+        options.progressHandler = { (progress, error, stop, info) in
+            if let error = error {
+                // 特别处理iCloud错误
+                let nsError = error as NSError
+                if nsError.domain.contains("CloudPhotoLibrary") || nsError.domain.contains("CKErrorDomain") {
+                    print("Detected iCloud error: \(error.localizedDescription)")
+                    // 如果是iCloud验证问题，显示占位图并立即返回
+                    DispatchQueue.main.async {
+                        let placeholder = UIImage(systemName: "exclamationmark.icloud")?.withTintColor(.gray, renderingMode: .alwaysOriginal)
+                        completion(placeholder)
+                        stop.pointee = true
+                    }
+                }
+            }
+        }
+        
+        // 创建一个计时器，如果图片加载时间过长，则返回占位图
+        let timeoutTimer = DispatchWorkItem {
+            print("Loading photo timed out: \(photo.id)")
+            DispatchQueue.main.async {
+                // 使用占位图而不是返回nil
+                let placeholderImage = UIImage(systemName: "photo")?.withTintColor(.gray, renderingMode: .alwaysOriginal)
+                completion(placeholderImage)
+                
+                // 标记为需要重新加载
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    // 从缓存中移除，下次点击时会重新加载
+                    self.imageCache.removeObject(forKey: cacheKey)
+                }
+            }
+        }
+        
+        // 3秒后超时
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: timeoutTimer)
+        
+        PHImageManager.default().requestImage(
+            for: photo.asset,
+            targetSize: CGSize(width: size.width * UIScreen.main.scale, height: size.height * UIScreen.main.scale),
+            contentMode: .aspectFill,
+            options: options
+        ) { image, info in
+            // 取消超时计时器
+            timeoutTimer.cancel()
+            
+            let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+            let isCloudAsset = (info?[PHImageResultIsInCloudKey] as? Bool) ?? false
+            let error = info?[PHImageErrorKey] as? Error
+            
+            print("Loading photo \(photo.id), is degraded: \(isDegraded), is in cloud: \(isCloudAsset), has error: \(error != nil ? "Yes" : "No")")
+            
+            // 处理iCloud错误
+            if let error = error {
+                let nsError = error as NSError
+                if nsError.domain.contains("CloudPhotoLibrary") || nsError.domain.contains("CKErrorDomain") {
+                    print("iCloud error: \(error.localizedDescription)")
+                    DispatchQueue.main.async {
+                        let placeholder = UIImage(systemName: "exclamationmark.icloud")?.withTintColor(.gray, renderingMode: .alwaysOriginal)
+                        completion(placeholder)
+                    }
+                    return
+                }
+            }
+            
+            DispatchQueue.main.async {
+                if let image = image, !isDegraded {
+                    // 缓存非降质图片
+                    self.imageCache.setObject(image, forKey: cacheKey)
+                    completion(image)
+                } else if let image = image {
+                    // 即使是降质图片也先显示
+                    completion(image)
+                    
+                    // 如果是云端资产且是降质图片，我们稍后尝试再次加载高质量版本
+                    if isCloudAsset && isDegraded {
+                        // 不缓存降质的云端图片，2秒后重试
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                            self.imageCache.removeObject(forKey: cacheKey)
+                        }
+                    }
+                } else {
+                    // 如果没有图片，显示占位符
+                    let placeholderImage = UIImage(systemName: "photo")?.withTintColor(.gray, renderingMode: .alwaysOriginal)
+                    completion(placeholderImage)
+                }
+            }
+        }
+    }
+    
+    // 添加预加载方法
+    func preloadImages(for photos: [DetailedPhoto], size: CGSize) {
+        // 增加预加载数量和效率
+        let preloadCount = min(photos.count, 15) // 从10张增加到15张
+        let preloadPhotos = Array(photos.prefix(preloadCount))
+        
+        let preloadGroup = DispatchGroup()
+        for photo in preloadPhotos {
+            preloadGroup.enter()
+            
+            // 使用并行队列加速加载
+            DispatchQueue.global(qos: .userInitiated).async {
+                self.loadImage(for: photo, size: size) { _ in
+                    preloadGroup.leave()
+                }
+            }
+        }
+        
+        // 所有预加载完成后的处理
+        preloadGroup.notify(queue: .main) {
+            print("Preload completed \(preloadPhotos.count) photos")
+        }
+    }
+    
+    // 添加在已保存/已删除视图中加载单张照片的方法
+    func preloadSavedDeletedPhoto(photo: DetailedPhoto, size: CGSize, completion: @escaping () -> Void) {
+        // 使用更可靠的缓存键，基于asset的localIdentifier
+        let cacheKey = NSString(string: "\(photo.asset.localIdentifier)_\(Int(size.width))x\(Int(size.height))")
+        
+        // 只清除当前照片的缓存，而不是所有缓存
+        imageCache.removeObject(forKey: cacheKey)
+        
+        print("Starting forced photo load: \(photo.id), cache key: \(cacheKey)")
+        
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        options.isNetworkAccessAllowed = true
+        options.isSynchronous = false  // 使用异步加载，但确保回调正确执行
+        options.version = .current
+        
+        if photo.mediaType == .video {
+            // 视频处理 - 使用AVAsset生成更可靠的缩略图
+            let videoOptions = PHVideoRequestOptions()
+            videoOptions.version = .original
+            videoOptions.deliveryMode = .highQualityFormat
+            videoOptions.isNetworkAccessAllowed = true
+            
+            PHImageManager.default().requestAVAsset(
+                forVideo: photo.asset,
+                options: videoOptions
+            ) { [weak self] avAsset, _, _ in
+                guard let self = self, let avAsset = avAsset else {
+                    DispatchQueue.main.async { completion() }
+                    return
+                }
+                
+                let generator = AVAssetImageGenerator(asset: avAsset)
+                generator.appliesPreferredTrackTransform = true
+                generator.maximumSize = CGSize(width: size.width * UIScreen.main.scale, 
+                                              height: size.height * UIScreen.main.scale)
+                
+                generator.generateCGImageAsynchronously(for: CMTime.zero) { cgImage, _, error in
+                    if let error = error {
+                        print("Video thumbnail generation error: \(error.localizedDescription)")
+                        DispatchQueue.main.async { completion() }
+                        return
+                    }
+                    
+                    guard let cgImage = cgImage else {
+                        print("Failed to generate video thumbnail")
+                        DispatchQueue.main.async { completion() }
+                        return
+                    }
+                    
+                    let thumbnail = UIImage(cgImage: cgImage)
+                    self.imageCache.setObject(thumbnail, forKey: cacheKey)
+                    print("Video thumbnail generated successfully: \(photo.id)")
+                    
+                    DispatchQueue.main.async { completion() }
+                }
+            }
+        } else {
+            // 照片处理 - 直接请求图像
+            PHImageManager.default().requestImage(
+                for: photo.asset,
+                targetSize: CGSize(width: size.width * UIScreen.main.scale, height: size.height * UIScreen.main.scale),
+                contentMode: .aspectFill,
+                options: options
+            ) { [weak self] image, info in
+                guard let self = self else {
+                    DispatchQueue.main.async { completion() }
+                    return
+                }
+                
+                if let image = image {
+                    // 缓存图片
+                    self.imageCache.setObject(image, forKey: cacheKey)
+                    print("Photo loaded successfully: \(photo.id)")
+                } else {
+                    print("Failed to load photo: \(photo.id)")
+                }
+                
+                // 无论成功与否都调用完成回调
+                DispatchQueue.main.async { completion() }
+            }
+        }
+    }
+    
+    // 检查照片是否正在加载
+    func isPhotoLoading(_ photo: DetailedPhoto) -> Bool {
+        let loadingKey = "loading_\(photo.id)"
+        return UserDefaults.standard.bool(forKey: loadingKey)
+    }
+    
+    // 移除指定缓存
+    func removeCacheForPhoto(_ photo: DetailedPhoto, size: CGSize? = nil) {
+        if let size = size {
+            // 移除特定尺寸的缓存
+            let cacheKey = NSString(string: "\(photo.id)_\(Int(size.width))x\(Int(size.height))")
+            imageCache.removeObject(forKey: cacheKey)
+            
+            // 如果是视频，也移除视频缓存
+            if photo.mediaType == .video {
+                let videoCacheKey = NSString(string: "video_\(photo.id)_\(Int(size.width))x\(Int(size.height))")
+                imageCache.removeObject(forKey: videoCacheKey)
+            }
+            
+            print("Removed cached photo \(photo.id)")
+        } else {
+            // 只移除与该照片ID相关的所有缓存
+            // 通过创建常见尺寸的缓存键来删除
+            let commonSizes: [CGSize] = [
+                CGSize(width: 100, height: 100),
+                CGSize(width: 200, height: 200),
+                CGSize(width: 300, height: 300),
+                CGSize(width: 400, height: 400),
+                CGSize(width: UIScreen.main.bounds.width, height: UIScreen.main.bounds.width),
+                CGSize(width: UIScreen.main.bounds.width, height: UIScreen.main.bounds.height)
+            ]
+            
+            for size in commonSizes {
+                let cacheKey = NSString(string: "\(photo.id)_\(Int(size.width))x\(Int(size.height))")
+                imageCache.removeObject(forKey: cacheKey)
+                
+                if photo.mediaType == .video {
+                    let videoCacheKey = NSString(string: "video_\(photo.id)_\(Int(size.width))x\(Int(size.height))")
+                    imageCache.removeObject(forKey: videoCacheKey)
+                }
+            }
+            
+            print("Attempted to remove cached photos for \(photo.id) in all sizes")
+        }
+    }
+    
+    // 强制刷新图片加载
+    func forceReloadImage(for photo: DetailedPhoto, size: CGSize, completion: @escaping (UIImage?) -> Void) {
+        // 清除此照片的缓存
+        let cacheKey = NSString(string: "\(photo.id)_\(Int(size.width))x\(Int(size.height))")
+        imageCache.removeObject(forKey: cacheKey)
+        
+        // 如果是视频，清除视频缩略图缓存
+        if photo.mediaType == .video {
+            let videoCacheKey = NSString(string: "video_\(photo.id)_\(Int(size.width))x\(Int(size.height))")
+            imageCache.removeObject(forKey: videoCacheKey)
+        }
+        
+        // 重新加载 - 使用自动重试机制
+        let retryCount = 3
+        
+        // 先声明闭包变量
+        var loadWithRetry: ((Int) -> Void)!
+        
+        // 然后再定义闭包
+        loadWithRetry = { (attempt: Int) in
+            print("Loading photo \(photo.id) attempt \(attempt)")
+            
+            if photo.mediaType == .video {
+                let options = PHImageRequestOptions()
+                options.deliveryMode = .highQualityFormat
+                options.isNetworkAccessAllowed = true
+                options.isSynchronous = false
+                options.version = .current
+                
+                // 添加iCloud错误处理
+                options.progressHandler = { (progress, error, stop, info) in
+                    if let error = error {
+                        // 特别处理iCloud错误
+                        let nsError = error as NSError
+                        if nsError.domain.contains("CloudPhotoLibrary") || nsError.domain.contains("CKErrorDomain") {
+                            print("Detected iCloud error: \(error.localizedDescription)")
+                            // 如果是iCloud验证问题，显示占位图并立即返回
+                            DispatchQueue.main.async {
+                                let placeholder = UIImage(systemName: "exclamationmark.icloud")?.withTintColor(.gray, renderingMode: .alwaysOriginal)
+                                completion(placeholder)
+                                stop.pointee = true
+                            }
+                        }
+                    }
+                }
+                
+                PHImageManager.default().requestImage(
+                    for: photo.asset,
+                    targetSize: CGSize(width: size.width * UIScreen.main.scale, height: size.height * UIScreen.main.scale),
+                    contentMode: .aspectFill,
+                    options: options
+                ) { image, info in
+                    let error = info?[PHImageErrorKey] as? Error
+                    
+                    // 处理iCloud错误
+                    if let error = error {
+                        let nsError = error as NSError
+                        if nsError.domain.contains("CloudPhotoLibrary") || nsError.domain.contains("CKErrorDomain") {
+                            print("iCloud error: \(error.localizedDescription)")
+                            DispatchQueue.main.async {
+                                let placeholder = UIImage(systemName: "exclamationmark.icloud")?.withTintColor(.gray, renderingMode: .alwaysOriginal)
+                                completion(placeholder)
+                            }
+                            return
+                        }
+                    }
+                    
+                    if let image = image {
+                        // 成功获取图片，保存到缓存并完成
+                        self.imageCache.setObject(image, forKey: NSString(string: "video_\(photo.id)_\(Int(size.width))x\(Int(size.height))"))
+                        DispatchQueue.main.async {
+                            completion(image)
+                        }
+                    } else if attempt < retryCount {
+                        // 失败但还有重试次数，延迟后重试
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            loadWithRetry(attempt + 1)
+                        }
+                    } else {
+                        // 重试次数用完，返回占位图
+                        DispatchQueue.main.async {
+                            let placeholder = UIImage(systemName: "video")?.withTintColor(.gray, renderingMode: .alwaysOriginal)
+                            completion(placeholder)
+                        }
+                    }
+                }
+            } else {
+                let options = PHImageRequestOptions()
+                options.deliveryMode = .highQualityFormat
+                options.isNetworkAccessAllowed = true
+                options.isSynchronous = false
+                options.version = .current
+                
+                // 添加iCloud错误处理
+                options.progressHandler = { (progress, error, stop, info) in
+                    if let error = error {
+                        // 特别处理iCloud错误
+                        let nsError = error as NSError
+                        if nsError.domain.contains("CloudPhotoLibrary") || nsError.domain.contains("CKErrorDomain") {
+                            print("Detected iCloud error: \(error.localizedDescription)")
+                            // 如果是iCloud验证问题，显示占位图并立即返回
+                            DispatchQueue.main.async {
+                                let placeholder = UIImage(systemName: "exclamationmark.icloud")?.withTintColor(.gray, renderingMode: .alwaysOriginal)
+                                completion(placeholder)
+                                stop.pointee = true
+                            }
+                        }
+                    }
+                }
+                
+                PHImageManager.default().requestImage(
+                    for: photo.asset,
+                    targetSize: CGSize(width: size.width * UIScreen.main.scale, height: size.height * UIScreen.main.scale),
+                    contentMode: .aspectFill,
+                    options: options
+                ) { image, info in
+                    let error = info?[PHImageErrorKey] as? Error
+                    
+                    // 处理iCloud错误
+                    if let error = error {
+                        let nsError = error as NSError
+                        if nsError.domain.contains("CloudPhotoLibrary") || nsError.domain.contains("CKErrorDomain") {
+                            print("iCloud error: \(error.localizedDescription)")
+                            DispatchQueue.main.async {
+                                let placeholder = UIImage(systemName: "exclamationmark.icloud")?.withTintColor(.gray, renderingMode: .alwaysOriginal)
+                                completion(placeholder)
+                            }
+                            return
+                        }
+                    }
+                    
+                    if let image = image {
+                        // 成功获取图片，保存到缓存并完成
+                        self.imageCache.setObject(image, forKey: cacheKey)
+                        DispatchQueue.main.async {
+                            completion(image)
+                        }
+                    } else if attempt < retryCount {
+                        // 失败但还有重试次数，延迟后重试
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            loadWithRetry(attempt + 1)
+                        }
+                    } else {
+                        // 重试次数用完，返回占位图
+                        DispatchQueue.main.async {
+                            let placeholder = UIImage(systemName: "photo")?.withTintColor(.gray, renderingMode: .alwaysOriginal)
+                            completion(placeholder)
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 开始第一次尝试
+        loadWithRetry(1)
+    }
+    
+    // Save app state
+    @objc func saveAppState() {
+        print("Saving app state")
+        
+        // Save current position
+        saveLastPosition()
+        
+        // Save IDs of saved photos
+        let savedIDs = savedPhotos.map { $0.id }
+        UserDefaults.standard.set(savedIDs, forKey: savedPhotosKey)
+        
+        // Save IDs of deleted photos
+        let deletedIDs = deletedPhotos.map { $0.id }
+        UserDefaults.standard.set(deletedIDs, forKey: deletedPhotosKey)
+        
+        // Save app version
+        UserDefaults.standard.set(currentAppStateVersion, forKey: appStateKey)
+        
+        print("State saved: \(savedIDs.count) saved photos, \(deletedIDs.count) deleted photos")
+    }
+    
+    // Save last processed position
+    private func saveLastPosition() {
+        if let firstPhoto = photos.first, let date = firstPhoto.creationDate {
+            UserDefaults.standard.set(date.timeIntervalSince1970, forKey: lastPositionKey)
+            print("Saved last processed position: \(date)")
+        }
+    }
+    
+    // Load last position and state
+    func loadLastPosition() {
+        // Check if there is a saved state
+        let savedVersion = UserDefaults.standard.string(forKey: appStateKey)
+        if savedVersion == nil || savedVersion != currentAppStateVersion {
+            print("No valid saved state found or version mismatch")
+            return
+        }
+        
+        // Restore saved and deleted photo states
+        if let savedIDs = UserDefaults.standard.array(forKey: savedPhotosKey) as? [String],
+           let deletedIDs = UserDefaults.standard.array(forKey: deletedPhotosKey) as? [String],
+           !savedIDs.isEmpty || !deletedIDs.isEmpty {
+            
+            print("Found saved state: \(savedIDs.count) saved photos, \(deletedIDs.count) deleted photos")
+            
+            // Remove processed photos from the photo list
+            var processedPhotos: [DetailedPhoto] = []
+            
+            // Process saved photos
+            for id in savedIDs {
+                if let index = photos.firstIndex(where: { $0.id == id }) {
+                    let photo = photos[index]
+                    photo.status = .saved
+                    processedPhotos.append(photo)
+                }
+            }
+            
+            // Process deleted photos
+            for id in deletedIDs {
+                if let index = photos.firstIndex(where: { $0.id == id }) {
+                    let photo = photos[index]
+                    photo.status = .deleted
+                    processedPhotos.append(photo)
+                }
+            }
+            
+            // Remove processed photos from the main list
+            for photo in processedPhotos {
+                if let index = photos.firstIndex(where: { $0.id == photo.id }) {
+                    photos.remove(at: index)
+                    
+                    if photo.status == .saved {
+                        savedPhotos.append(photo)
+                    } else if photo.status == .deleted {
+                        deletedPhotos.append(photo)
+                    }
+                }
+            }
+            
+            print("State restored: \(photos.count) pending photos, \(savedPhotos.count) saved photos, \(deletedPhotos.count) deleted photos")
+        }
+        
+        // Restore last browsing position
+        if let timestamp = UserDefaults.standard.object(forKey: lastPositionKey) as? TimeInterval {
+            let date = Date(timeIntervalSince1970: timestamp)
+            print("Loading last processed position: \(date)")
+            
+            // Find the last processed photo position
+            let index = photos.firstIndex { photo in
+                if let photoDate = photo.creationDate {
+                    return photoDate <= date
+                }
+                return false
+            }
+            
+            if let index = index {
+                print("Found last processed position, skipping \(index) photos")
+                // Remove processed photos
+                let processedPhotos = Array(photos[0..<index])
+                photos.removeFirst(index)
+                
+                // Mark processed photos as pending
+                for photo in processedPhotos {
+                    photo.status = .pending
+                }
+                
+                print("Remaining pending photos: \(photos.count)")
+            } else {
+                print("Last processed position not found, starting from the beginning")
+            }
+        } else {
+            print("No last processed position record, starting from the beginning")
+        }
+        
+        // Preload the first batch of photos
+        preloadNextPhotos()
+    }
+    
+    // Optimize preload next batch of photos
+    func preloadNextPhotos() {
+        // Save current position
+        saveLastPosition()
+        
+        // Preload next batch of photos
+        let cardWidth = UIScreen.main.bounds.width - 40
+        let cardHeight = UIScreen.main.bounds.height * 0.6
+        let preloadCount = min(photos.count, 8) // Preload up to 8 photos, balance performance and experience
+        let photosToPreload = Array(photos.prefix(preloadCount))
+        
+        print("Preload next batch of photos, count: \(photosToPreload.count)")
+        
+        // Use new preload mechanism
+        for (index, photo) in photosToPreload.enumerated() {
+            let delay = Double(index) * 0.1 // Offset load time, reduce instantaneous pressure
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                // First 3 use high priority
+                if index < 3 {
+                    self.loadImage(for: photo, size: CGSize(width: cardWidth, height: cardHeight)) { _ in }
+                } else {
+                    DispatchQueue.global(qos: .utility).async {
+                        self.loadImage(for: photo, size: CGSize(width: cardWidth, height: cardHeight)) { _ in }
+                    }
+                }
+            }
+        }
+    }
+    
+    func savePhoto(_ photo: DetailedPhoto) {
+        print("Saving photo: \(photo.id)")
+        if let index = photos.firstIndex(where: { $0.id == photo.id }) {
+            let updatedPhoto = photos[index]
+            updatedPhoto.status = .saved
+            photos.remove(at: index)
+            savedPhotos.append(updatedPhoto)
+            print("Photo saved, remaining photos: \(photos.count), saved photos: \(savedPhotos.count)")
+            
+            // Save current position
+            saveLastPosition()
+        }
+    }
+    
+    func deletePhoto(_ photo: DetailedPhoto) {
+        print("Deleting photo: \(photo.id)")
+        if let index = photos.firstIndex(where: { $0.id == photo.id }) {
+            let updatedPhoto = photos[index]
+            updatedPhoto.status = .deleted
+            photos.remove(at: index)
+            deletedPhotos.append(updatedPhoto)
+            print("Photo deleted, remaining photos: \(photos.count), deleted photos: \(deletedPhotos.count)")
+            
+            // Save current position
+            saveLastPosition()
+        }
+    }
+    
+    // Move photo from deleted list to saved list
+    func movePhotoFromDeletedToSaved(_ photo: DetailedPhoto) {
+        if let index = deletedPhotos.firstIndex(where: { $0.id == photo.id }) {
+            let photo = deletedPhotos[index]
+            deletedPhotos.remove(at: index)
+            savedPhotos.append(photo)
+            savePhotoLists()
+        }
+    }
+    
+    // Permanently delete photos
+    func permanentlyDeletePhotos(_ photoIds: [String], completion: @escaping (Bool) -> Void) {
+        guard !photoIds.isEmpty else {
+            completion(true)
+            return
+        }
+        
+        // Check if we already have photo deletion permission
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        
+        if status == .authorized {
+            // Already have full permissions, proceed with deletion
+            print("Already authorized, proceeding with deletion")
+            performPhotosDeletion(photoIds: photoIds) { success in
+                // Remove deleted photos from the deletedPhotos array
+                if success {
+                    DispatchQueue.main.async {
+                        for photoId in photoIds {
+                            if let index = self.deletedPhotos.firstIndex(where: { $0.id == photoId }) {
+                                self.deletedPhotos.remove(at: index)
+                            }
+                        }
+                        self.savePhotoLists()
+                    }
+                }
+                completion(success)
+            }
+        } else {
+            // Request permission
+            PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
+                DispatchQueue.main.async {
+                    if status == .authorized {
+                        // Store that we have deletion permission
+                        UserDefaults.standard.set(true, forKey: "PhotoDeletePermissionGranted")
+                        
+                        // Proceed with deletion
+                        self.performPhotosDeletion(photoIds: photoIds) { success in
+                            // Remove deleted photos from the deletedPhotos array
+                            if success {
+                                DispatchQueue.main.async {
+                                    for photoId in photoIds {
+                                        if let index = self.deletedPhotos.firstIndex(where: { $0.id == photoId }) {
+                                            self.deletedPhotos.remove(at: index)
+                                        }
+                                    }
+                                    self.savePhotoLists()
+                                }
+                            }
+                            completion(success)
+                        }
+                    } else {
+                        // Permission denied
+                        print("Photo deletion permission denied")
+                        completion(false)
+                    }
+                }
+            }
+        }
+    }
+    
+    private func performPhotosDeletion(photoIds: [String], completion: @escaping (Bool) -> Void) {
+        // Get PHAsset objects using photoIds
+        let fetchOptions = PHFetchOptions()
+        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: photoIds, options: fetchOptions)
+        
+        var assetsToDelete = [PHAsset]()
+        fetchResult.enumerateObjects { (asset, _, _) in
+            assetsToDelete.append(asset)
+        }
+        
+        // Check if we found any assets to delete
+        guard !assetsToDelete.isEmpty else {
+            print("No photo assets found to delete")
+            completion(true)
+            return
+        }
+        
+        print("Ready to delete \(assetsToDelete.count) photos")
+        
+        // Perform deletion operation
+        PHPhotoLibrary.shared().performChanges({
+            PHAssetChangeRequest.deleteAssets(assetsToDelete as NSFastEnumeration)
+        }) { success, error in
+            DispatchQueue.main.async {
+                if success {
+                    print("Successfully deleted \(assetsToDelete.count) photos")
+                    completion(true)
+                } else {
+                    print("Failed to delete photos: \(error?.localizedDescription ?? "Unknown error")")
+                    completion(false)
+                }
+            }
+        }
+    }
+    
+    // Save photo lists to UserDefaults
+    func savePhotoLists() {
+        // Save IDs of saved photos
+        let savedPhotoIds = savedPhotos.map { $0.id }
+        UserDefaults.standard.set(savedPhotoIds, forKey: savedPhotosKey)
+        
+        // Save IDs of deleted photos
+        let deletedPhotoIds = deletedPhotos.map { $0.id }
+        UserDefaults.standard.set(deletedPhotoIds, forKey: deletedPhotosKey)
+        
+        // Save app state version
+        UserDefaults.standard.set(currentAppStateVersion, forKey: appStateKey)
+        UserDefaults.standard.synchronize()
+        
+        print("Saved photo lists: \(savedPhotoIds.count) saved photos, \(deletedPhotoIds.count) deleted photos")
+    }
+    
+    // Load all albums
+    func loadAlbums() {
+        print("Starting to load albums")
+        
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if status != .authorized && status != .limited {
+            requestPermission { [weak self] granted in
+                if granted {
+                    self?.loadAlbumsWithPermission()
+                }
+            }
+            return
+        }
+        
+        loadAlbumsWithPermission()
+    }
+    
+    func loadAlbumsWithPermission() {
+        // Create empty array to store albums
+        var newAlbums: [DetailedAlbum] = []
+        
+        // Get smart albums (e.g. "Recently Added", "Favorites" etc.)
+        let smartAlbums = PHAssetCollection.fetchAssetCollections(
+            with: .smartAlbum,
+            subtype: .any,
+            options: nil
+        )
+        
+        // Get user-created albums
+        let userAlbums = PHAssetCollection.fetchAssetCollections(
+            with: .album,
+            subtype: .any,
+            options: nil
+        )
+        
+        // Process smart albums
+        smartAlbums.enumerateObjects { (collection, _, _) in
+            let fetchOptions = PHFetchOptions()
+            let assets = PHAsset.fetchAssets(in: collection, options: fetchOptions)
+            
+            // Only add albums containing photos
+            if assets.count > 0 {
+                // Filter out some smart albums that don't need to be displayed
+                if !self.shouldFilterSmartAlbum(collection) {
+                    let album = DetailedAlbum(album: collection)
+                    newAlbums.append(album)
+                    print("Added smart album: \(album.title), containing \(album.count) media")
+                }
+            }
+        }
+        
+        // Process user-created albums
+        userAlbums.enumerateObjects { (collection, _, _) in
+            let fetchOptions = PHFetchOptions()
+            let assets = PHAsset.fetchAssets(in: collection, options: fetchOptions)
+            
+            // Only add albums containing photos
+            if assets.count > 0 {
+                let album = DetailedAlbum(album: collection)
+                newAlbums.append(album)
+                print("Added user album: \(album.title), containing \(album.count) media")
+            }
+        }
+        
+        // Album sort: Ensure "All Photos" album is first, then "Recently Added", other albums sorted by photo count
+        newAlbums.sort { (album1, album2) -> Bool in
+            // "All Photos" album at top
+            if album1.album.assetCollectionSubtype == .smartAlbumUserLibrary {
+                return true
+            }
+            if album2.album.assetCollectionSubtype == .smartAlbumUserLibrary {
+                return false
+            }
+            
+            // "Recently Added" album second
+            if album1.album.assetCollectionSubtype == .smartAlbumRecentlyAdded {
+                return true
+            }
+            if album2.album.assetCollectionSubtype == .smartAlbumRecentlyAdded {
+                return false
+            }
+            
+            // Other albums sorted by photo count descending
+            return album1.count > album2.count
+        }
+        
+        // Preload album cover
+        for album in newAlbums {
+            loadAlbumCover(for: album)
+        }
+        
+        DispatchQueue.main.async {
+            self.albums = newAlbums
+            
+            // Default select first album (usually "All Photos")
+            if let firstAlbum = newAlbums.first {
+                self.selectedAlbum = firstAlbum
+            }
+            
+            print("Albums loaded, total: \(newAlbums.count) albums")
+        }
+    }
+    
+    // Filter out albums that don't need to be displayed
+    func shouldFilterSmartAlbum(_ collection: PHAssetCollection) -> Bool {
+        // Filter out some smart albums based on album type
+        let filteredSubtypes: [PHAssetCollectionSubtype] = [
+            .smartAlbumAllHidden,
+            .smartAlbumScreenshots,
+            .smartAlbumDepthEffect,
+            .smartAlbumLivePhotos,
+            .smartAlbumAnimated,
+            .smartAlbumLongExposures
+        ]
+        
+        return filteredSubtypes.contains(collection.assetCollectionSubtype)
+    }
+    
+    // Load album cover
+    func loadAlbumCover(for album: DetailedAlbum) {
+        album.isLoading = true
+        
+        // Get resources in the album
+        let fetchOptions = PHFetchOptions()
+        fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        fetchOptions.fetchLimit = 1
+        
+        let assets = PHAsset.fetchAssets(in: album.album, options: fetchOptions)
+        
+        if let firstAsset = assets.firstObject {
+            let options = PHImageRequestOptions()
+            options.deliveryMode = .opportunistic
+            options.isNetworkAccessAllowed = true
+            options.isSynchronous = false
+            
+            // Request smaller image as cover
+            let size = CGSize(width: 100, height: 100)
+            
+            PHImageManager.default().requestImage(
+                for: firstAsset,
+                targetSize: size,
+                contentMode: .aspectFill,
+                options: options
+            ) { image, info in
+                DispatchQueue.main.async {
+                    album.coverImage = image
+                    album.isLoading = false
+                }
+            }
+        } else {
+            album.isLoading = false
+        }
+    }
+    
+    // Load photos from album
+    func loadPhotosFromAlbum(_ album: DetailedAlbum) {
+        print("Loading photos from album: \(album.title)")
+        isLoading = true
+        selectedAlbum = album
+        
+        let fetchOptions = PHFetchOptions()
+        // Allow loading photos from all sources, including cloud photos
+        fetchOptions.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
+        fetchOptions.includeAllBurstAssets = false
+        
+        // Sort by creation date descending
+        fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        
+        // Get resources in the album
+        let assets = PHAsset.fetchAssets(in: album.album, options: fetchOptions)
+        print("Album contains \(assets.count) media")
+        
+        var allAssets: [PHAsset] = []
+        assets.enumerateObjects { (asset, _, _) in
+            allAssets.append(asset)
+        }
+        
+        var newPhotos: [DetailedPhoto] = []
+        for asset in allAssets {
+            let photo = DetailedPhoto(asset: asset)
+            newPhotos.append(photo)
+        }
+        
+        DispatchQueue.main.async {
+            self.photos = newPhotos
+            self.isLoading = false
+            print("Album photos loaded, total: \(newPhotos.count)")
+            
+            // Preload first batch of photos
+            self.preloadNextPhotos()
+        }
+    }
+    
+    // Get saved photos list method improved
+    func loadSavedPhotos(completion: @escaping () -> Void) {
+        if savedPhotos.isEmpty {
+            completion()
+            return
+        }
+        
+        isLoading = true
+        
+        // Clear all photo cache, force reload
+        imageCache.removeAllObjects()
+        print("Cleared all cache, preparing to load saved photos list")
+        
+        // Preload first 15 saved photos thumbnails
+        let preloadGroup = DispatchGroup()
+        let preloadCount = min(savedPhotos.count, 15)
+        
+        for (index, photo) in savedPhotos.prefix(preloadCount).enumerated() {
+            preloadGroup.enter()
+            
+            // Create smaller size for preload
+            let previewSize = CGSize(width: 200, height: 200)
+            
+            // Offset load time, avoid requesting too many resources at once
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.1) {
+                // Load preview based on media type
+                if photo.mediaType == .video {
+                    self.loadThumbnailForVideo(photo, size: previewSize) { _ in
+                        preloadGroup.leave()
+                    }
+                } else {
+                    self.loadImage(for: photo, size: previewSize) { _ in
+                        preloadGroup.leave()
+                    }
+                }
+            }
+        }
+        
+        // All preload completed call callback
+        preloadGroup.notify(queue: .main) {
+            self.isLoading = false
+            print("Saved photos list preload completed")
+            completion()
+        }
+    }
+    
+    // Get deleted photos list method improved
+    func loadDeletedPhotos(completion: @escaping () -> Void) {
+        if deletedPhotos.isEmpty {
+            completion()
+            return
+        }
+        
+        isLoading = true
+        
+        // Clear all photo cache, force reload
+        imageCache.removeAllObjects()
+        print("Cleared all cache, preparing to load deleted photos list")
+        
+        // Preload first 15 deleted photos thumbnails
+        let preloadGroup = DispatchGroup()
+        let preloadCount = min(deletedPhotos.count, 15)
+        
+        for (index, photo) in deletedPhotos.prefix(preloadCount).enumerated() {
+            preloadGroup.enter()
+            
+            // Create smaller size for preload
+            let previewSize = CGSize(width: 200, height: 200)
+            
+            // Offset load time, avoid requesting too many resources at once
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.1) {
+                // Load preview based on media type
+                if photo.mediaType == .video {
+                    self.loadThumbnailForVideo(photo, size: previewSize) { _ in
+                        preloadGroup.leave()
+                    }
+                } else {
+                    self.loadImage(for: photo, size: previewSize) { _ in
+                        preloadGroup.leave()
+                    }
+                }
+            }
+        }
+        
+        // All preload completed call callback
+        preloadGroup.notify(queue: .main) {
+            self.isLoading = false
+            print("Deleted photos list preload completed")
+            completion()
+        }
+    }
+    
+    // Get video thumbnail
+    func loadThumbnailForVideo(_ photo: DetailedPhoto, size: CGSize, completion: @escaping (UIImage?) -> Void) {
+        guard photo.mediaType == .video else {
+            completion(nil)
+            return
+        }
+        
+        // Generate cache key
+        let cacheKey = NSString(string: "video_\(photo.id)_\(Int(size.width))x\(Int(size.height))")
+        
+        // Check cache for image
+        if let cachedImage = imageCache.object(forKey: cacheKey) {
+            print("Using cached video thumbnail: \(photo.id)")
+            DispatchQueue.main.async {
+                completion(cachedImage)
+            }
+            return
+        }
+        
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        options.isNetworkAccessAllowed = true
+        options.isSynchronous = false
+        options.version = .current
+        
+        // Create a timer, if load time is too long, return placeholder
+        let timeoutTimer = DispatchWorkItem {
+            print("Loading video thumbnail timed out: \(photo.id)")
+            DispatchQueue.main.async {
+                // Return placeholder
+                let placeholderImage = UIImage(systemName: "video")?.withTintColor(.gray, renderingMode: .alwaysOriginal)
+                completion(placeholderImage)
+                
+                // 2 seconds later try to reload
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    self.imageCache.removeObject(forKey: cacheKey)
+                }
+            }
+        }
+        
+        // 3 seconds later timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: timeoutTimer)
+        
+        PHImageManager.default().requestImage(
+            for: photo.asset,
+            targetSize: CGSize(width: size.width * UIScreen.main.scale, height: size.height * UIScreen.main.scale),
+            contentMode: .aspectFill,
+            options: options
+        ) { image, info in
+            // Cancel timeout timer
+            timeoutTimer.cancel()
+            
+            let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+            let isCloudAsset = (info?[PHImageResultIsInCloudKey] as? Bool) ?? false
+            let error = info?[PHImageErrorKey] as? Error
+            
+            if let error = error {
+                print("Loading video thumbnail failed: \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    // Return placeholder
+                    let placeholderImage = UIImage(systemName: "video")?.withTintColor(.gray, renderingMode: .alwaysOriginal)
+                    completion(placeholderImage)
+                }
+                return
+            }
+            
+            DispatchQueue.main.async {
+                if let image = image, !isDegraded {
+                    // Cache non-degraded image
+                    self.imageCache.setObject(image, forKey: cacheKey)
+                    completion(image)
+                } else if let image = image {
+                    // Even if degraded, display it first
+                    completion(image)
+                    
+                    // If cloud asset and degraded, try again later
+                    if isCloudAsset && isDegraded {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                            self.imageCache.removeObject(forKey: cacheKey)
+                        }
+                    }
+                } else {
+                    // Return placeholder
+                    let placeholderImage = UIImage(systemName: "video")?.withTintColor(.gray, renderingMode: .alwaysOriginal)
+                    completion(placeholderImage)
+                }
+            }
+        }
+    }
+    
+    // 加载视频缩略图
+    func loadVideoThumbnail(for photo: DetailedPhoto, size: CGSize, completion: @escaping (UIImage?) -> Void) {
+        loadThumbnailForVideo(photo, size: size, completion: completion)
+    }
+    
+    // 加载视频URL
+    func loadVideoURL(for photo: DetailedPhoto, completion: @escaping (URL?) -> Void) {
+        guard photo.mediaType == .video else {
+            completion(nil)
+            return
+        }
+        
+        requestPermission { [weak self] granted in
+            guard granted, let self = self else {
+                DispatchQueue.main.async {
+                    completion(nil)
+                }
+                return
+            }
+            
+            self.loadVideoURLAfterPermissionGranted(for: photo, completion: completion)
+        }
+    }
+    
+    private func loadVideoURLAfterPermissionGranted(for photo: DetailedPhoto, completion: @escaping (URL?) -> Void) {
+        let options = PHVideoRequestOptions()
+        options.version = .current
+        options.deliveryMode = .highQualityFormat
+        options.isNetworkAccessAllowed = true
+        
+        PHImageManager.default().requestAVAsset(forVideo: photo.asset, options: options) { asset, _, _ in
+            DispatchQueue.main.async {
+                if let urlAsset = asset as? AVURLAsset {
+                    completion(urlAsset.url)
+                } else {
+                    completion(nil)
+                }
+            }
+        }
+    }
+    
+    // 清除远处照片的缓存，用于内存警告时调用
+    func clearDistantPhotoCache() {
+        // 保留前3张照片的缓存，清除其他缓存
+        let currentPhotos = photos.prefix(3).map { $0.id }
+        let currentSavedPhotos = savedPhotos.prefix(5).map { $0.id }
+        let currentDeletedPhotos = deletedPhotos.prefix(5).map { $0.id }
+        
+        // 列出所有要保留的照片ID
+        let photosToKeep = Set(currentPhotos + currentSavedPhotos + currentDeletedPhotos)
+        
+        print("内存警告：保留 \(photosToKeep.count) 张照片缓存，清除其他照片缓存")
+        
+        // 清除其他所有照片的缓存
+        let allPhotos = photos + savedPhotos + deletedPhotos
+        for photo in allPhotos {
+            if !photosToKeep.contains(photo.id) {
+                removeCacheForPhoto(photo)
+            }
+        }
+        
+        // 降低缓存容量
+        imageCache.countLimit = 30
+    }
+    
+    // 清空已删除照片缓存的方法
+    func clearDeletedPhotosCache() {
+        DispatchQueue.main.async {
+            // 清空内存中的删除照片列表之前，先移除相关图片缓存
+            for photo in self.deletedPhotos {
+                self.removeCacheForPhoto(photo)
+            }
+            
+            // 清空删除照片列表
+            self.deletedPhotos = []
+            
+            // 清空UserDefaults中的删除照片ID列表
+            UserDefaults.standard.removeObject(forKey: self.deletedPhotosKey)
+            
+            // 显示确认信息
+            print("已清空删除照片缓存")
+        }
+    }
+} 
