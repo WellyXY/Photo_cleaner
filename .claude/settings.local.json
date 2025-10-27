@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/welly/.claude/**)",
+      "Bash(echo:*)",
+      "Read(//Users/welly/**)",
+      "Bash(HomeView.swift SavedPhotosView.swift DeletedPhotosView.swift)",
+      "Bash(find:*)",
+      "Bash(SettingsView.swift IconGenerator.swift SwipeActionView.swift PaywallView.swift )",
+      "Bash(FullScreenVideoView.swift PhotoCardView.swift PhotoThumbnail.swift SplashScreen.swift )",
+      "Bash(ActionButton.swift LimitReachedView.swift FullScreenPhotoView.swift PhotoDetailView.swift)",
+      "Bash(chmod:*)",
+      "Read(///**)",
+      "Bash(xcodebuild:*)",
+      "Bash(awk:*)",
+      "Bash(swift:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

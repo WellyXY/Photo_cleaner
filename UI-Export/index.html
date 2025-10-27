@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>PhotoCleaner UI Export</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Splash Screen -->
+        <section id="splash" class="splash-screen" style="display: none;">
+            <div class="splash-icon">📸</div>
+            <h1 class="splash-title">PhotoCleaner</h1>
+            <p class="splash-subtitle">Organize your photo library</p>
+        </section>
+
+        <!-- HomeView -->
+        <section id="home">
+            <!-- Title Bar -->
+            <div class="title-bar">
+                <h1>Photo Filter</h1>
+                <div class="refresh-button">↻</div>
+            </div>
+
+            <!-- Filter Scroll View -->
+            <div class="filter-scroll">
+                <div class="filter-card selected">
+                    <img class="filter-card-bg" src="https://via.placeholder.com/120x80/667788/FFFFFF?text=2025-10" alt="October 2025">
+                    <div class="filter-card-overlay">
+                        <span class="filter-card-text">October 2025</span>
+                    </div>
+                </div>
+                <div class="filter-card">
+                    <img class="filter-card-bg" src="https://via.placeholder.com/120x80/778899/FFFFFF?text=2025-09" alt="September 2025">
+                    <div class="filter-card-overlay">
+                        <span class="filter-card-text">September 2025</span>
+                    </div>
+                </div>
+                <div class="filter-card">
+                    <img class="filter-card-bg" src="https://via.placeholder.com/120x80/889900/FFFFFF?text=2025-08" alt="August 2025">
+                    <div class="filter-card-overlay">
+                        <span class="filter-card-text">August 2025</span>
+                    </div>
+                </div>
+                <div class="filter-card">
+                    <img class="filter-card-bg" src="https://via.placeholder.com/120x80/990011/FFFFFF?text=All" alt="All Photos">
+                    <div class="filter-card-overlay">
+                        <span class="filter-card-text">All Photos</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Photo Card -->
+            <div class="photo-card-container">
+                <div class="photo-card">
+                    <img src="https://via.placeholder.com/400x533/4A90E2/FFFFFF?text=Photo" alt="Photo">
+
+                    <div class="photo-card-info">
+                        <div class="photo-date">Oct 26, 2025</div>
+                        <div class="photo-size-badge">2.4MB</div>
+                    </div>
+
+                    <!-- Loading Overlay (hidden by default) -->
+                    <div class="loading-overlay" style="display: none;">
+                        <div class="spinner"></div>
+                        <span class="loading-text">Loading...</span>
+                    </div>
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="action-buttons">
+                    <button class="action-button delete">
+                        <span class="action-button-icon">🗑️</span>
+                    </button>
+                    <button class="action-button save">
+                        <span class="action-button-icon">💾</span>
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Divider -->
+        <div style="height: 40px; background: linear-gradient(to bottom, #fff 50%, #f9f9f9 50%);"></div>
+
+        <!-- SavedPhotosView -->
+        <section id="saved" style="background: #f9f9f9; padding: 20px 0;">
+            <div class="nav-bar">
+                <h2 class="nav-title">Saved</h2>
+            </div>
+
+            <div class="photo-grid-container">
+                <div class="month-section">
+                    <div class="month-section-inner">
+                        <h3 class="month-title">2025年10月</h3>
+                        <div class="photo-grid">
+                            <div class="photo-thumbnail">
+                                <img src="https://via.placeholder.com/150/FF6B6B/FFFFFF?text=1" alt="Photo 1">
+                            </div>
+                            <div class="photo-thumbnail">
+                                <img src="https://via.placeholder.com/150/4ECDC4/FFFFFF?text=2" alt="Photo 2">
+                            </div>
+                            <div class="photo-thumbnail">
+                                <img src="https://via.placeholder.com/150/45B7D1/FFFFFF?text=3" alt="Photo 3">
+                            </div>
+                            <div class="photo-thumbnail">
+                                <img src="https://via.placeholder.com/150/FFA07A/FFFFFF?text=4" alt="Photo 4">
+                            </div>
+                            <div class="photo-thumbnail">
+                                <img src="https://via.placeholder.com/150/98D8C8/FFFFFF?text=5" alt="Photo 5">
+                            </div>
+                            <div class="photo-thumbnail">
+                                <img src="https://via.placeholder.com/150/F7DC6F/FFFFFF?text=6" alt="Photo 6">
+                            </div>
+                            <div class="photo-thumbnail">
+                                <img src="https://via.placeholder.com/150/BB8FCE/FFFFFF?text=7" alt="Photo 7">
+                            </div>
+                            <div class="photo-thumbnail">
+                                <img src="https://via.placeholder.com/150/85C1E2/FFFFFF?text=8" alt="Photo 8">
+                            </div>
+                            <div class="photo-thumbnail">
+                                <img src="https://via.placeholder.com/150/F8B739/FFFFFF?text=9" alt="Photo 9">
+                            </div>
+                        </div>
+                        <button class="show-more-btn">
+                            <span>Show more (15 more)</span>
+                            <span>▼</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="month-section">
+                    <div class="month-section-inner">
+                        <h3 class="month-title">2025年09月</h3>
+                        <div class="photo-grid">
+                            <div class="photo-thumbnail">
+                                <img src="https://via.placeholder.com/150/E74C3C/FFFFFF?text=10" alt="Photo 10">
+                            </div>
+                            <div class="photo-thumbnail">
+                                <img src="https://via.placeholder.com/150/3498DB/FFFFFF?text=11" alt="Photo 11">
+                            </div>
+                            <div class="photo-thumbnail">
+                                <img src="https://via.placeholder.com/150/2ECC71/FFFFFF?text=12" alt="Photo 12">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Divider -->
+        <div style="height: 40px; background: linear-gradient(to bottom, #f9f9f9 50%, #fff 50%);"></div>
+
+        <!-- DeletedPhotosView -->
+        <section id="deleted" style="position: relative; min-height: 600px; padding-bottom: 100px;">
+            <div class="nav-bar">
+                <h2 class="nav-title">Deleted</h2>
+            </div>
+
+            <div class="photo-grid-container">
+                <div class="month-section">
+                    <div class="month-section-inner">
+                        <h3 class="month-title">2025年10月</h3>
+                        <div class="photo-grid">
+                            <div class="photo-thumbnail deleted">
+                                <img src="https://via.placeholder.com/150/95A5A6/FFFFFF?text=D1" alt="Deleted 1">
+                            </div>
+                            <div class="photo-thumbnail deleted">
+                                <img src="https://via.placeholder.com/150/7F8C8D/FFFFFF?text=D2" alt="Deleted 2">
+                            </div>
+                            <div class="photo-thumbnail deleted">
+                                <img src="https://via.placeholder.com/150/BDC3C7/FFFFFF?text=D3" alt="Deleted 3">
+                            </div>
+                            <div class="photo-thumbnail deleted">
+                                <img src="https://via.placeholder.com/150/95A5A6/FFFFFF?text=D4" alt="Deleted 4">
+                            </div>
+                            <div class="photo-thumbnail deleted">
+                                <img src="https://via.placeholder.com/150/7F8C8D/FFFFFF?text=D5" alt="Deleted 5">
+                            </div>
+                            <div class="photo-thumbnail deleted">
+                                <img src="https://via.placeholder.com/150/BDC3C7/FFFFFF?text=D6" alt="Deleted 6">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Remove Items Button -->
+            <button class="remove-items-btn">Remove Items</button>
+        </section>
+
+        <!-- Empty State Example -->
+        <section id="empty" style="display: none;">
+            <div class="nav-bar">
+                <h2 class="nav-title">Empty State</h2>
+            </div>
+            <div class="empty-state">
+                <div class="empty-state-icon">📁</div>
+                <h3 class="empty-state-title">No Deleted Photos</h3>
+                <p class="empty-state-subtitle">Items you delete will appear here</p>
+            </div>
+        </section>
+    </div>
+
+    <!-- JavaScript for interactions -->
+    <script>
+        // Filter card selection
+        document.querySelectorAll('.filter-card').forEach(card => {
+            card.addEventListener('click', function() {
+                document.querySelectorAll('.filter-card').forEach(c => c.classList.remove('selected'));
+                this.classList.add('selected');
+            });
+        });
+
+        // Action button animations
+        document.querySelectorAll('.action-button').forEach(btn => {
+            btn.addEventListener('click', function() {
+                const overlay = document.querySelector('.loading-overlay');
+                overlay.style.display = 'flex';
+                setTimeout(() => {
+                    overlay.style.display = 'none';
+                }, 1500);
+            });
+        });
+
+        // Show more button
+        document.querySelectorAll('.show-more-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                const text = this.querySelector('span:first-child');
+                const arrow = this.querySelector('span:last-child');
+                if (arrow.textContent === '▼') {
+                    text.textContent = 'Show less';
+                    arrow.textContent = '▲';
+                } else {
+                    text.textContent = 'Show more (15 more)';
+                    arrow.textContent = '▼';
+                }
+            });
+        });
+
+        // Refresh button rotation
+        document.querySelector('.refresh-button').addEventListener('click', function() {
+            this.style.transition = 'transform 1s linear';
+            this.style.transform = 'rotate(360deg)';
+            setTimeout(() => {
+                this.style.transition = '';
+                this.style.transform = '';
+            }, 1000);
+        });
+
+        // Photo thumbnail click
+        document.querySelectorAll('.photo-thumbnail').forEach(thumb => {
+            thumb.addEventListener('click', function() {
+                console.log('Photo clicked:', this);
+                // Add your navigation logic here
+            });
+        });
+
+        // Remove items button
+        const removeBtn = document.querySelector('.remove-items-btn');
+        if (removeBtn) {
+            removeBtn.addEventListener('click', function() {
+                if (confirm('Are you sure you want to permanently delete these photos?')) {
+                    alert('Photos deleted successfully!');
+                }
+            });
+        }
+    </script>
+</body>
+</html>
