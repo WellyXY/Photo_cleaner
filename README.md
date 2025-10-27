@@ -2,6 +2,8 @@
 
 A powerful iOS photo management app with AI-powered organization and premium monetization features.
 
+**🔗 GitHub Repository**: [https://github.com/WellyXY/Photo_cleaner](https://github.com/WellyXY/Photo_cleaner)
+
 ## ✨ Features
 
 ### 🎯 Core Functionality
